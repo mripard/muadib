@@ -1,0 +1,173 @@
+[package]
+authors = ["Maxime Ripard <mripard@kernel.org>"]
+categories = [
+    "command-line-utilities",
+    "development-tools::debugging",
+    "embedded",
+    "hardware-support",
+    "os::linux-apis",
+]
+description = "Android Debug Bridge (ADB) Implementation"
+edition = "2024"
+keywords = ["adb", "android", "debug"]
+license-file = "./LICENSE"
+name = "muadib"
+readme = "./README.md"
+repository = "https://github.com/mripard/muadib.git"
+version = "0.1.0"
+
+[dependencies]
+
+[lints.rust]
+# Groups
+deprecated-safe = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+keyword_idents = { level = "warn", priority = -1 }
+let_underscore = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+refining_impl_trait = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2021_compatibility = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
+
+# Individual Lints
+absolute_paths_not_starting_with_crate = "warn"
+ambiguous_negative_literals = "warn"
+deprecated_safe_2024 = "warn"
+edition_2024_expr_fragment_specifier = "warn"
+elided_lifetimes_in_paths = "warn"
+explicit_outlives_requirements = "warn"
+ffi_unwind_calls = "warn"
+if_let_rescope = "warn"
+impl_trait_overcaptures = "warn"
+impl_trait_redundant_captures = "warn"
+keyword-idents = "warn"
+keyword_idents_2018 = "warn"
+keyword_idents_2024 = "warn"
+let_underscore_drop = "warn"
+linker_messages = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_copy_implementations = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+missing_unsafe_on_extern = "warn"
+non_ascii_idents = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+rust_2021_incompatible_closure_captures = "warn"
+rust_2021_incompatible_or_patterns = "warn"
+rust_2021_prefixes_incompatible_syntax = "warn"
+rust_2021_prelude_collisions = "warn"
+rust_2024_guarded_string_incompatible_syntax = "warn"
+rust_2024_incompatible_pat = "warn"
+rust_2024_prelude_collisions = "warn"
+single_use_lifetimes = "warn"
+tail_expr_drop_order = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unnameable_types = "warn"
+unreachable_pub = "warn"
+unsafe_attr_outside_unsafe = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unstable_features = "warn"
+unused_crate_dependencies = "warn"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+unused_qualifications = "warn"
+unused_results = "warn"
+variant_size_differences = "warn"
+
+[lints.clippy]
+# Groups
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Individual Lints
+## Allowed Lints
+
+## Restriction Clippy Lints
+alloc_instead_of_core = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+dbg_macro = "warn"
+decimal_literal_representation = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_drop = "warn"
+empty_structs_with_brackets = "warn"
+error_impl_error = "warn"
+exit = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+format_push_string = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+infinite_loop = "warn"
+let_underscore_must_use = "warn"
+let_underscore_untyped = "warn"
+literal_string_with_formatting_args = "warn"
+lossy_float_literal = "warn"
+map_err_ignore = "warn"
+mem_forget = "warn"
+missing_assert_message = "warn"
+missing_asserts_for_indexing = "warn"
+mixed_read_write_in_expression = "warn"
+mod_module_files = "warn"
+modulo_arithmetic = "warn"
+multiple_inherent_impl = "warn"
+multiple_unsafe_ops_per_block = "warn"
+mutex_atomic = "warn"
+needless_raw_strings = "warn"
+non_ascii_literal = "warn"
+non_zero_suggestions = "warn"
+panic_in_result_fn = "warn"
+partial_pub_fields = "warn"
+pathbuf_init_then_push = "warn"
+pointer_format = "warn"
+print_stdout = "warn"
+redundant_type_annotations = "warn"
+ref_patterns = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_name_method = "warn"
+semicolon_outside_block = "warn"
+separated_literal_suffix = "warn"
+std_instead_of_alloc = "warn"
+std_instead_of_core = "warn"
+str_to_string = "warn"
+string_add = "warn"
+suspicious_xor_used_as_pow = "warn"
+tests_outside_test_module = "warn"
+todo = "warn"
+try_err = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_self_imports = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
+unused_trait_names = "warn"
+unwrap_in_result = "warn"
+unwrap_used = "warn"
+use_debug = "warn"
+wildcard_enum_match_arm = "warn"
+
+## Other Lints
+coerce_container_to_any = "warn"
+cognitive_complexity = "warn"
+debug_assert_with_mut_call = "warn"
+fallible_impl_from = "warn"
+imprecise_flops = "warn"
+mutex_integer = "warn"
+path_buf_push_overwrite = "warn"
+string_lit_as_bytes = "warn"
+trait_duplication_in_bounds = "warn"
+verbose_file_reads = "warn"

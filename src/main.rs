@@ -12,6 +12,7 @@ use log::{debug, error, info, warn};
 use thiserror::Error;
 
 mod buffers;
+mod device_info;
 mod ffs;
 mod message;
 mod usb;
@@ -133,17 +134,24 @@ struct AdbConnection<'a> {
     ep0: BorrowedFd<'a>,
     bulk_in: BorrowedFd<'a>,
     bulk_out: BorrowedFd<'a>,
+    info: &'a device_info::DeviceInfo,
     buffers: BufferManager,
     version: ProtocolVersion,
 }
 
 impl<'a> AdbConnection<'a> {
     /// Creates a new ADB connection
-    fn new(ep0: BorrowedFd<'a>, bulk_out: BorrowedFd<'a>, bulk_in: BorrowedFd<'a>) -> Self {
+    fn new(
+        ep0: BorrowedFd<'a>,
+        bulk_out: BorrowedFd<'a>,
+        bulk_in: BorrowedFd<'a>,
+        info: &'a device_info::DeviceInfo,
+    ) -> Self {
         Self {
             ep0,
             bulk_in,
             bulk_out,
+            info,
             buffers: BufferManager::new(),
             version: ProtocolVersion::V0,
         }
@@ -156,19 +164,16 @@ impl<'a> AdbConnection<'a> {
         header: &message::AdbHeader,
         _payload: &[u8],
     ) {
-        let recv_version = match ProtocolVersion::try_from(header.arg0) {
-            Ok(v) => {
-                info!("host connected with ADB protocol {v:?}");
-                v
-            }
-            Err(_) => {
-                warn!("host sent unknown protocol version, assuming V0");
-                ProtocolVersion::V0
-            }
+        let recv_version = if let Ok(v) = ProtocolVersion::try_from(header.arg0) {
+            info!("host connected with ADB protocol {v:?}");
+            v
+        } else {
+            warn!("host sent unknown protocol version, assuming V0");
+            ProtocolVersion::V0
         };
         self.version = recv_version;
 
-        let (response_header, response_payload) = message::cnxn_response(self.version);
+        let (response_header, response_payload) = message::cnxn_response(recv_version, self.info);
         self.submit_message(sq, &response_header, Some(&response_payload));
     }
 
@@ -534,12 +539,18 @@ fn run_daemon(
     bulk_out: BorrowedFd<'_>,
     bulk_in: BorrowedFd<'_>,
 ) -> io::Result<()> {
+    let device_info = device_info::DeviceInfo::from_system();
+    info!(
+        "device identity: serial={}, name={}, model={}, device={}",
+        device_info.serial, device_info.name, device_info.model, device_info.device
+    );
+
     info!("waiting for host connection...");
     wait_for_enable(ep0)?;
 
     info!("ready for ADB communication");
 
-    let mut conn = AdbConnection::new(ep0, bulk_out, bulk_in);
+    let mut conn = AdbConnection::new(ep0, bulk_out, bulk_in, &device_info);
     conn.run()
 }
 

@@ -221,16 +221,16 @@ pub(crate) fn cnxn_header(host_version: ProtocolVersion, payload: &[u8]) -> AdbH
     )
 }
 
-const PRODUCT_NAME: &str = "muadib";
-const PRODUCT_MODEL: &str = "muadib";
-const PRODUCT_DEVICE: &str = "muadib";
-
 /// Builds a complete CNXN response (header + system identity payload).
-pub(crate) fn cnxn_response(peer: ProtocolVersion) -> (AdbHeader, Vec<u8>) {
-    let payload =
-        format!(
-        "device::ro.product.name={PRODUCT_NAME};ro.product.model={PRODUCT_MODEL};ro.product.device={PRODUCT_DEVICE};\0"
-    ).into_bytes();
+pub(crate) fn cnxn_response(
+    peer: ProtocolVersion,
+    info: &crate::device_info::DeviceInfo,
+) -> (AdbHeader, Vec<u8>) {
+    let payload = format!(
+        "device::ro.product.name={};ro.product.model={};ro.product.device={};\0",
+        info.name, info.model, info.device,
+    )
+    .into_bytes();
 
     (cnxn_header(peer, &payload), payload)
 }

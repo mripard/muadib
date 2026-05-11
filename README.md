@@ -10,6 +10,8 @@ device.
 Early development. Currently supports:
 
 - USB gadget registration as an ADB interface (class 0xFF/0x42/0x01)
+- Device identity discovery from DMI, `/proc/cpuinfo`,
+  `/etc/os-release`, and `/etc/hostname`
 
 ## Requirements
 

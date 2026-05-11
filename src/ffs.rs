@@ -115,7 +115,10 @@ pub(crate) fn setup_gadget() -> io::Result<()> {
     fs::create_dir_all(&strings_en_path)?;
     fs::write(strings_en_path.join("manufacturer"), ADB_MANUFACTURER_EN)?;
     fs::write(strings_en_path.join("product"), ADB_PRODUCT_EN)?;
-    fs::write(strings_en_path.join("serialnumber"), "0123456789ABCDEF")?;
+
+    let device_info = crate::device_info::DeviceInfo::from_system();
+    info!("device serial: {}", device_info.serial);
+    fs::write(strings_en_path.join("serialnumber"), &device_info.serial)?;
 
     let config_path = gadget_path.join("configs/c.1");
     fs::create_dir_all(&config_path)?;

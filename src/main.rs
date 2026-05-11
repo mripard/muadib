@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
-use core::num::NonZeroU32;
+extern crate alloc;
+
+use core::{ffi::CStr, num::NonZeroU32};
 use std::{
     env, io,
     os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd},
@@ -15,12 +17,16 @@ mod buffers;
 mod device_info;
 mod ffs;
 mod message;
+mod stream;
+mod sync;
 mod usb;
 
 use crate::{
     buffers::BufferManager,
     ffs::{UsbFunctionFsEventType, bind_udc, read_next_ffs_event_type, setup_gadget, unbind_udc},
     message::ProtocolVersion,
+    stream::{Service, StreamManager},
+    sync::{SyncFrameResponseHeader, SyncResult, SyncState},
     usb::AsLittleEndianBytes as _,
 };
 
@@ -136,6 +142,7 @@ struct AdbConnection<'a> {
     bulk_out: BorrowedFd<'a>,
     info: &'a device_info::DeviceInfo,
     buffers: BufferManager,
+    streams: StreamManager,
     version: ProtocolVersion,
 }
 
@@ -153,8 +160,27 @@ impl<'a> AdbConnection<'a> {
             bulk_out,
             info,
             buffers: BufferManager::new(),
+            streams: StreamManager::new(),
             version: ProtocolVersion::V0,
         }
+    }
+
+    /// Handles CLSE: acknowledges and tears down the stream.
+    fn handle_command_clse(&mut self, sq: &mut SubmissionQueue<'_>, header: &message::AdbHeader) {
+        let local_id = header.arg1;
+
+        let Some(stream) = self.streams.get(local_id) else {
+            debug!("CLSE for already-closed stream {local_id}");
+            return;
+        };
+
+        assert_eq!(stream.remote_id, header.arg0, "CLSE remote_id mismatch");
+
+        info!("host closed stream {local_id}");
+
+        let clse = message::clse_header(self.version, local_id, stream.remote_id);
+        self.submit_message(sq, &clse, None);
+        self.streams.close(local_id);
     }
 
     /// Handles CNXN: negotiates protocol version and sends the connection response.
@@ -175,6 +201,94 @@ impl<'a> AdbConnection<'a> {
 
         let (response_header, response_payload) = message::cnxn_response(recv_version, self.info);
         self.submit_message(sq, &response_header, Some(&response_payload));
+    }
+
+    /// Handles OKAY: marks the stream as ready and continues any pending transfer.
+    fn handle_command_okay(&mut self, sq: &mut SubmissionQueue<'_>, header: &message::AdbHeader) {
+        let local_id = header.arg1;
+        debug!("received OKAY for stream {local_id}");
+
+        if let Some(stream) = self.streams.get(local_id) {
+            stream.waiting_for_okay = false;
+        }
+
+        self.maybe_continue_stream(sq, local_id);
+    }
+
+    /// Handles OPEN: creates a stream for the requested service.
+    fn handle_command_open(
+        &mut self,
+        sq: &mut SubmissionQueue<'_>,
+        header: &message::AdbHeader,
+        payload: &[u8],
+    ) {
+        let remote_id = header.arg0;
+
+        let Ok(c_service) = CStr::from_bytes_until_nul(payload) else {
+            warn!("host sent non-null terminated service name");
+            let clse = message::clse_header(self.version, 0, remote_id);
+            self.submit_message(sq, &clse, None);
+            return;
+        };
+
+        let Ok(service) = c_service.to_str() else {
+            warn!("host sent non-utf8 encoded service name");
+            let clse = message::clse_header(self.version, 0, remote_id);
+            self.submit_message(sq, &clse, None);
+            return;
+        };
+
+        if let Some(local_id) = self.streams.open(remote_id, service) {
+            info!("opened stream {local_id} for remote {remote_id}");
+            let okay = message::okay_header(self.version, local_id, remote_id);
+            self.submit_message(sq, &okay, None);
+        } else {
+            let clse = message::clse_header(self.version, 0, remote_id);
+            self.submit_message(sq, &clse, None);
+        }
+    }
+
+    /// Handles WRTE: dispatches payload data to the stream's service handler.
+    fn handle_command_wrte(
+        &mut self,
+        sq: &mut SubmissionQueue<'_>,
+        header: &message::AdbHeader,
+        payload: &[u8],
+    ) {
+        let remote_id = header.arg0;
+        let local_id = header.arg1;
+
+        let okay = message::okay_header(self.version, local_id, remote_id);
+        self.submit_message(sq, &okay, None);
+
+        let Some(stream) = self.streams.get(local_id) else {
+            warn!("WRTE for unknown stream {local_id}");
+            return;
+        };
+
+        let remote_id = stream.remote_id;
+
+        match &mut stream.service {
+            Service::Sync(sync_svc) => match sync_svc.handle(payload) {
+                SyncResult::Stat(stat) => {
+                    let wrte =
+                        message::wrte_header(self.version, local_id, remote_id, stat.as_le_bytes());
+                    self.submit_message(sq, &wrte, Some(stat.as_le_bytes()));
+                }
+                SyncResult::Data(hdr, data) => {
+                    self.submit_wrte_sync(sq, local_id, remote_id, &hdr, &data);
+                }
+                SyncResult::Continue => {
+                    self.maybe_submit_wrte_sync(sq, local_id);
+                }
+                SyncResult::Quit => {
+                    info!("sync session quit, closing stream {local_id}");
+                    let clse = message::clse_header(self.version, local_id, remote_id);
+                    self.submit_message(sq, &clse, None);
+                    self.streams.close(local_id);
+                }
+            },
+        }
     }
 
     /// Dispatches a fully parsed ADB command.
@@ -206,6 +320,19 @@ impl<'a> AdbConnection<'a> {
         match header.command {
             message::Command::Cnxn => {
                 self.handle_command_cnxn(sq, header, payload.expect("CNXN requires a payload"));
+            }
+            message::Command::Open => {
+                self.handle_command_open(sq, header, payload.expect("OPEN requires a payload"));
+            }
+            message::Command::Wrte => {
+                self.handle_command_wrte(sq, header, payload.expect("WRTE requires a payload"));
+            }
+            message::Command::Okay => {
+                assert!(payload.is_none(), "OKAY must not carry a payload");
+                self.handle_command_okay(sq, header);
+            }
+            message::Command::Clse => {
+                self.handle_command_clse(sq, header);
             }
             cmd => {
                 warn!("unhandled message: {cmd}");
@@ -506,6 +633,60 @@ impl<'a> AdbConnection<'a> {
                 sq.push(&pay_sqe).expect("SQ full");
             }
         }
+    }
+
+    /// Drives any pending work on the given stream (e.g. file transfer chunks).
+    fn maybe_continue_stream(&mut self, sq: &mut SubmissionQueue<'_>, local_id: u32) {
+        let Some(stream) = self.streams.get(local_id) else {
+            return;
+        };
+
+        match stream.service {
+            Service::Sync(_) => self.maybe_submit_wrte_sync(sq, local_id),
+        }
+    }
+
+    /// Sends the next sync DATA frame if the stream is ready and has data.
+    fn maybe_submit_wrte_sync(&mut self, sq: &mut SubmissionQueue<'_>, local_id: u32) {
+        let Some(stream) = self.streams.get(local_id) else {
+            return;
+        };
+
+        if stream.waiting_for_okay {
+            return;
+        }
+
+        let remote_id = stream.remote_id;
+
+        let Service::Sync(ref mut sync_svc) = stream.service;
+        let SyncState::Sending(ref mut sender) = sync_svc.state else {
+            return;
+        };
+
+        if let Some((hdr, data)) = sender.next_frame() {
+            stream.waiting_for_okay = true;
+            self.submit_wrte_sync(sq, local_id, remote_id, &hdr, &data);
+        } else {
+            sync_svc.state = SyncState::Idle;
+        }
+    }
+
+    /// Submits a WRTE containing a sync response frame (header + payload).
+    fn submit_wrte_sync(
+        &mut self,
+        sq: &mut SubmissionQueue<'_>,
+        local_id: u32,
+        remote_id: u32,
+        hdr: &SyncFrameResponseHeader,
+        payload: &[u8],
+    ) {
+        let mut sync_payload =
+            Vec::with_capacity(size_of::<SyncFrameResponseHeader>() + payload.len());
+        sync_payload.extend_from_slice(hdr.as_le_bytes());
+        sync_payload.extend_from_slice(payload);
+
+        let wrte = message::wrte_header(self.version, local_id, remote_id, &sync_payload);
+        self.submit_message(sq, &wrte, Some(&sync_payload));
     }
 }
 

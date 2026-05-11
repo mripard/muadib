@@ -12,6 +12,7 @@ Early development. Currently supports:
 - USB gadget registration as an ADB interface (class 0xFF/0x42/0x01)
 - Device identity discovery from DMI, `/proc/cpuinfo`,
   `/etc/os-release`, and `/etc/hostname`
+- File transfer (`adb pull`)
 
 ## Requirements
 
@@ -58,4 +59,5 @@ socket activation on the `FunctionFS` endpoints.
 ```
 adb devices
 adb get-serialno
+adb pull /path/on/device /local/path
 ```

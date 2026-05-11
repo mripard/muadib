@@ -221,6 +221,26 @@ pub(crate) fn cnxn_header(host_version: ProtocolVersion, payload: &[u8]) -> AdbH
     )
 }
 
+/// Builds an OKAY header: `arg0`=`local_id`, `arg1`=`remote_id`.
+pub(crate) fn okay_header(peer: ProtocolVersion, local_id: u32, remote_id: u32) -> AdbHeader {
+    header_from_payload(peer, Command::Okay, local_id, remote_id, &[])
+}
+
+/// Builds a WRTE header: `arg0`=`local_id`, `arg1`=`remote_id`.
+pub(crate) fn wrte_header(
+    peer: ProtocolVersion,
+    local_id: u32,
+    remote_id: u32,
+    payload: &[u8],
+) -> AdbHeader {
+    header_from_payload(peer, Command::Wrte, local_id, remote_id, payload)
+}
+
+/// Builds a CLSE header: `arg0`=`local_id`, `arg1`=`remote_id`.
+pub(crate) fn clse_header(peer: ProtocolVersion, local_id: u32, remote_id: u32) -> AdbHeader {
+    header_from_payload(peer, Command::Clse, local_id, remote_id, &[])
+}
+
 /// Builds a complete CNXN response (header + system identity payload).
 pub(crate) fn cnxn_response(
     peer: ProtocolVersion,

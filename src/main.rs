@@ -11,12 +11,16 @@ use io_uring::{IoUring, SubmissionQueue, opcode, types::Fd};
 use log::{debug, error, info, warn};
 use thiserror::Error;
 
+mod buffers;
 mod ffs;
 mod message;
 mod usb;
 
-use crate::ffs::{
-    UsbFunctionFsEventType, bind_udc, read_next_ffs_event_type, setup_gadget, unbind_udc,
+use crate::{
+    buffers::BufferManager,
+    ffs::{UsbFunctionFsEventType, bind_udc, read_next_ffs_event_type, setup_gadget, unbind_udc},
+    message::ProtocolVersion,
+    usb::AsLittleEndianBytes as _,
 };
 
 #[derive(Debug, Error)]
@@ -35,6 +39,9 @@ enum UserDataOpType {
 
     /// We queue a Payload Read on `bulk_out`
     BulkOutReadPayload,
+
+    /// We queue a write on `bulk_in`
+    BulkInWrite,
 }
 
 impl TryFrom<u32> for UserDataOpType {
@@ -45,6 +52,7 @@ impl TryFrom<u32> for UserDataOpType {
             1 => Ok(Self::Ep0Poll),
             2 => Ok(Self::BulkOutReadHeader),
             3 => Ok(Self::BulkOutReadPayload),
+            4 => Ok(Self::BulkInWrite),
             other => Err(UserDataOpTypeError(other)),
         }
     }
@@ -123,8 +131,10 @@ impl TryFrom<u64> for UserData {
 /// State for a single ADB session over USB.
 struct AdbConnection<'a> {
     ep0: BorrowedFd<'a>,
-    _bulk_in: BorrowedFd<'a>,
+    bulk_in: BorrowedFd<'a>,
     bulk_out: BorrowedFd<'a>,
+    buffers: BufferManager,
+    version: ProtocolVersion,
 }
 
 impl<'a> AdbConnection<'a> {
@@ -132,19 +142,40 @@ impl<'a> AdbConnection<'a> {
     fn new(ep0: BorrowedFd<'a>, bulk_out: BorrowedFd<'a>, bulk_in: BorrowedFd<'a>) -> Self {
         Self {
             ep0,
-            _bulk_in: bulk_in,
+            bulk_in,
             bulk_out,
+            buffers: BufferManager::new(),
+            version: ProtocolVersion::V0,
         }
     }
 
+    /// Handles CNXN: negotiates protocol version and sends the connection response.
+    fn handle_command_cnxn(
+        &mut self,
+        sq: &mut SubmissionQueue<'_>,
+        header: &message::AdbHeader,
+        _payload: &[u8],
+    ) {
+        let recv_version = match ProtocolVersion::try_from(header.arg0) {
+            Ok(v) => {
+                info!("host connected with ADB protocol {v:?}");
+                v
+            }
+            Err(_) => {
+                warn!("host sent unknown protocol version, assuming V0");
+                ProtocolVersion::V0
+            }
+        };
+        self.version = recv_version;
+
+        let (response_header, response_payload) = message::cnxn_response(self.version);
+        self.submit_message(sq, &response_header, Some(&response_payload));
+    }
+
     /// Dispatches a fully parsed ADB command.
-    #[expect(
-        clippy::unused_self,
-        reason = "Will use self once command handlers are added"
-    )]
     fn handle_command(
         &mut self,
-        _sq: &mut SubmissionQueue<'_>,
+        sq: &mut SubmissionQueue<'_>,
         header: &message::AdbHeader,
         payload: Option<&[u8]>,
     ) {
@@ -161,6 +192,19 @@ impl<'a> AdbConnection<'a> {
                 "received {} (arg0={:#x}, arg1={:#x}, no payload)",
                 header.command, header.arg0, header.arg1,
             );
+        }
+
+        #[expect(
+            clippy::wildcard_enum_match_arm,
+            reason = "More commands will be added"
+        )]
+        match header.command {
+            message::Command::Cnxn => {
+                self.handle_command_cnxn(sq, header, payload.expect("CNXN requires a payload"));
+            }
+            cmd => {
+                warn!("unhandled message: {cmd}");
+            }
         }
     }
 
@@ -200,7 +244,7 @@ impl<'a> AdbConnection<'a> {
     #[expect(clippy::too_many_lines, reason = "Event loop with inline CQE dispatch")]
     fn run(&mut self) -> io::Result<()> {
         let mut pending_header: Option<message::AdbHeader> = None;
-        let mut bulk_out_buf = vec![0u8; 4096];
+        let mut bulk_out_buf = vec![0u8; message::PROTOCOL_VERSION.max_payload() as usize];
         let mut ring = IoUring::new(32)?;
 
         let mut sq = ring.submission();
@@ -231,6 +275,13 @@ impl<'a> AdbConnection<'a> {
                 };
 
                 match (user_data.op_type(), user_data.data(), cqe.result()) {
+                    // A failed outbound write is not fatal — the USB endpoint
+                    // is still usable, so just free the buffer and carry on.
+                    (UserDataOpType::BulkInWrite, Some(slot), res) if res < 0 => {
+                        let err = io::Error::from_raw_os_error(-res);
+                        warn!("BulkInWrite error: {err}");
+                        self.buffers.free(slot.get());
+                    }
                     (op_type, _, res) if res < 0 => {
                         let err = io::Error::from_raw_os_error(-res);
                         return Err(io::Error::other(format!("{op_type:?} error: {err}")));
@@ -313,10 +364,12 @@ impl<'a> AdbConnection<'a> {
                         if let Some(header) = pending_header.take() {
                             let data = &bulk_out_buf[..len];
 
-                            if message::checksum(data) == header.data_check {
-                                self.handle_command(&mut sq, &header, Some(data));
-                            } else {
+                            if self.version.requires_checksum()
+                                && message::checksum(data) != header.data_check
+                            {
                                 warn!("checksum mismatch, dropping message");
+                            } else {
+                                self.handle_command(&mut sq, &header, Some(data));
                             }
                         } else {
                             warn!("payload without pending header");
@@ -333,6 +386,12 @@ impl<'a> AdbConnection<'a> {
                                 UserData::new(UserDataOpType::BulkOutReadHeader, None),
                             );
                         }
+                    }
+                    (UserDataOpType::BulkInWrite, Some(slot), _) => {
+                        self.buffers.free(slot.get());
+                    }
+                    (UserDataOpType::BulkInWrite, None, _) => {
+                        unreachable!()
                     }
                 }
             }
@@ -379,6 +438,68 @@ impl<'a> AdbConnection<'a> {
         // SAFETY: All our parameters are copied. We don't have any potential lifetime issue here.
         unsafe {
             sq.push(&poll_op).expect("SQ full");
+        }
+    }
+
+    /// Submits an ADB message (header + optional payload) to `bulk_in` via `io_uring`.
+    fn submit_message(
+        &mut self,
+        sq: &mut SubmissionQueue<'_>,
+        header: &message::AdbHeader,
+        payload: Option<&[u8]>,
+    ) {
+        let payload = payload.filter(|p| !p.is_empty());
+
+        let (hdr_slot, hdr_buf) = self.buffers.alloc(size_of_val(header));
+        hdr_buf.extend_from_slice(header.as_le_bytes());
+
+        let mut hdr_sqe = opcode::Write::new(
+            Fd(self.bulk_in.as_raw_fd()),
+            hdr_buf.as_ptr(),
+            u32::try_from(hdr_buf.len()).expect("buffer length fits in u32"),
+        )
+        .build()
+        .user_data(
+            UserData::new(
+                UserDataOpType::BulkInWrite,
+                Some(NonZeroU32::new(hdr_slot).expect("Buffer slot 0 cannot exist")),
+            )
+            .into(),
+        );
+
+        if payload.is_some() {
+            hdr_sqe = hdr_sqe.flags(io_uring::squeue::Flags::IO_LINK);
+        }
+
+        // SAFETY: hdr_buf is owned by BufferManager and stays alive until the
+        // BulkInWrite completion frees the slot.
+        unsafe {
+            sq.push(&hdr_sqe).expect("SQ full");
+        };
+
+        if let Some(payload) = payload {
+            let (pay_slot, pay_buf) = self.buffers.alloc(payload.len());
+            pay_buf.extend_from_slice(payload);
+
+            let pay_sqe = opcode::Write::new(
+                Fd(self.bulk_in.as_raw_fd()),
+                pay_buf.as_ptr(),
+                u32::try_from(pay_buf.len()).expect("buffer length fits in u32"),
+            )
+            .build()
+            .user_data(
+                UserData::new(
+                    UserDataOpType::BulkInWrite,
+                    Some(NonZeroU32::new(pay_slot).expect("Buffer slot 0 cannot exist")),
+                )
+                .into(),
+            );
+
+            // SAFETY: pay_buf is owned by BufferManager and stays alive until the
+            // BulkInWrite completion frees the slot.
+            unsafe {
+                sq.push(&pay_sqe).expect("SQ full");
+            }
         }
     }
 }

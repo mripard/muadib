@@ -75,6 +75,61 @@ impl fmt::Display for Command {
     }
 }
 
+const A_VERSION_V0: u32 = 0x0100_0000;
+const A_VERSION_V1: u32 = 0x0100_0001;
+
+/// Error returned when parsing an unknown ADB protocol version.
+#[derive(Debug, Error)]
+#[error("Unknown Protocol version: {0:#010x}")]
+pub(crate) struct ProtocolVersionError(u32);
+
+/// ADB protocol version negotiated during the CNXN handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub(crate) enum ProtocolVersion {
+    /// ADB protocol v0: requires payload checksums, max payload 4096 bytes.
+    V0 = A_VERSION_V0,
+
+    /// ADB protocol v1: skips payload checksums, max payload up to 1MB.
+    V1 = A_VERSION_V1,
+}
+
+impl From<ProtocolVersion> for u32 {
+    fn from(v: ProtocolVersion) -> Self {
+        v as u32
+    }
+}
+
+impl TryFrom<u32> for ProtocolVersion {
+    type Error = ProtocolVersionError;
+
+    fn try_from(v: u32) -> Result<Self, Self::Error> {
+        match v {
+            A_VERSION_V0 => Ok(Self::V0),
+            A_VERSION_V1 => Ok(Self::V1),
+            other => Err(ProtocolVersionError(other)),
+        }
+    }
+}
+
+impl ProtocolVersion {
+    /// Maximum payload size in bytes for this protocol version.
+    pub(crate) const fn max_payload(self) -> u32 {
+        match self {
+            Self::V0 => 4096,
+            Self::V1 => 1024 * 1024,
+        }
+    }
+
+    /// Whether this version requires payload checksums.
+    pub(crate) fn requires_checksum(self) -> bool {
+        self == Self::V0
+    }
+}
+
+/// The protocol version this daemon advertises during CNXN.
+pub(crate) const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1;
+
 /// Parsed ADB message header (24 bytes on the wire).
 #[repr(C)]
 #[derive(Debug)]
@@ -127,4 +182,55 @@ pub(crate) fn parse_header(input: &mut &[u8]) -> WResult<AdbHeader> {
             })
         })
         .parse_next(input)
+}
+
+/// Builds an [`AdbHeader`] for a given command and payload.
+pub(crate) fn header_from_payload(
+    host_version: ProtocolVersion,
+    command: Command,
+    arg0: u32,
+    arg1: u32,
+    payload: &[u8],
+) -> AdbHeader {
+    let checksum = if host_version.requires_checksum() {
+        checksum(payload)
+    } else {
+        0
+    };
+
+    AdbHeader {
+        command,
+        arg0,
+        arg1,
+        data_length: payload.len().try_into().expect(
+            "The maximum payload that can be negotiated is 2^20 (1MB), way lower than u32::MAX",
+        ),
+        data_check: checksum,
+        magic: u32::from(command) ^ 0xffff_ffff,
+    }
+}
+
+/// Builds a CNXN header advertising our protocol version and max payload.
+pub(crate) fn cnxn_header(host_version: ProtocolVersion, payload: &[u8]) -> AdbHeader {
+    header_from_payload(
+        host_version,
+        Command::Cnxn,
+        PROTOCOL_VERSION.into(),
+        PROTOCOL_VERSION.max_payload(),
+        payload,
+    )
+}
+
+const PRODUCT_NAME: &str = "muadib";
+const PRODUCT_MODEL: &str = "muadib";
+const PRODUCT_DEVICE: &str = "muadib";
+
+/// Builds a complete CNXN response (header + system identity payload).
+pub(crate) fn cnxn_response(peer: ProtocolVersion) -> (AdbHeader, Vec<u8>) {
+    let payload =
+        format!(
+        "device::ro.product.name={PRODUCT_NAME};ro.product.model={PRODUCT_MODEL};ro.product.device={PRODUCT_DEVICE};\0"
+    ).into_bytes();
+
+    (cnxn_header(peer, &payload), payload)
 }

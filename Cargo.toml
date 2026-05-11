@@ -30,6 +30,13 @@ io-uring = { version = "0.7", default-features = false }
 log = { version = "0.4", default-features = false, features = ["std"] }
 rustix = { version = "1", default-features = false, features = ["std"] }
 thiserror = { version = "2", default-features = false, features = ["std"] }
+winnow = { version = "1", default-features = false, features = [
+    "alloc",
+    "ascii",
+    "binary",
+    "parser",
+    "std",
+] }
 
 [lints.rust]
 # Groups

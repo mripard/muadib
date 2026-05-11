@@ -12,6 +12,7 @@ use log::{debug, error, info, warn};
 use thiserror::Error;
 
 mod ffs;
+mod message;
 mod usb;
 
 use crate::ffs::{
@@ -29,8 +30,11 @@ enum UserDataOpType {
     /// We queue an epoll on ep0
     Ep0Poll = 1,
 
-    /// We queue a read on `bulk_out`
-    BulkOutRead,
+    /// We queue a Header Read on `bulk_out`
+    BulkOutReadHeader,
+
+    /// We queue a Payload Read on `bulk_out`
+    BulkOutReadPayload,
 }
 
 impl TryFrom<u32> for UserDataOpType {
@@ -39,7 +43,8 @@ impl TryFrom<u32> for UserDataOpType {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::Ep0Poll),
-            2 => Ok(Self::BulkOutRead),
+            2 => Ok(Self::BulkOutReadHeader),
+            3 => Ok(Self::BulkOutReadPayload),
             other => Err(UserDataOpTypeError(other)),
         }
     }
@@ -132,6 +137,33 @@ impl<'a> AdbConnection<'a> {
         }
     }
 
+    /// Dispatches a fully parsed ADB command.
+    #[expect(
+        clippy::unused_self,
+        reason = "Will use self once command handlers are added"
+    )]
+    fn handle_command(
+        &mut self,
+        _sq: &mut SubmissionQueue<'_>,
+        header: &message::AdbHeader,
+        payload: Option<&[u8]>,
+    ) {
+        if let Some(payload) = payload {
+            debug!(
+                "received {} (arg0={:#x}, arg1={:#x}, payload={} bytes)",
+                header.command,
+                header.arg0,
+                header.arg1,
+                payload.len(),
+            );
+        } else {
+            debug!(
+                "received {} (arg0={:#x}, arg1={:#x}, no payload)",
+                header.command, header.arg0, header.arg1,
+            );
+        }
+    }
+
     /// Handles the ep0 events
     ///
     /// # Returns
@@ -165,7 +197,9 @@ impl<'a> AdbConnection<'a> {
     ///
     /// Returns an error on `io_uring` submission failures or unrecoverable
     /// endpoint I/O errors.
+    #[expect(clippy::too_many_lines, reason = "Event loop with inline CQE dispatch")]
     fn run(&mut self) -> io::Result<()> {
+        let mut pending_header: Option<message::AdbHeader> = None;
         let mut bulk_out_buf = vec![0u8; 4096];
         let mut ring = IoUring::new(32)?;
 
@@ -179,7 +213,7 @@ impl<'a> AdbConnection<'a> {
             self.submit_bulk_out_read(
                 &mut sq,
                 &mut bulk_out_buf,
-                UserData::new(UserDataOpType::BulkOutRead, None),
+                UserData::new(UserDataOpType::BulkOutReadHeader, None),
             );
         };
         sq.sync();
@@ -207,8 +241,86 @@ impl<'a> AdbConnection<'a> {
                         }
                         self.submit_ep0_poll(&mut sq);
                     }
-                    (UserDataOpType::BulkOutRead, _, len) => {
-                        info!("received {len} bytes");
+                    (UserDataOpType::BulkOutReadHeader, _, len) => {
+                        #[expect(
+                            clippy::unwrap_in_result,
+                            reason = "A positive i32 always fits in a usize"
+                        )]
+                        let len = usize::try_from(len)
+                            .expect("A positive i32 will always fit in a usize");
+
+                        let header = {
+                            let mut data = &bulk_out_buf[..len];
+                            message::parse_header(&mut data)
+                        };
+
+                        match header {
+                            Ok(header) if header.data_length > 0 => {
+                                pending_header = Some(header);
+
+                                // SAFETY: bulk_out_buf has been allocated before the ring, and will
+                                // be dropped after it. Dropping the ring will cancel all pending
+                                // submissions, so we know once it's done we don't have a possible
+                                // access to our buffer anymore.
+                                unsafe {
+                                    self.submit_bulk_out_read(
+                                        &mut sq,
+                                        &mut bulk_out_buf,
+                                        UserData::new(UserDataOpType::BulkOutReadPayload, None),
+                                    );
+                                }
+                            }
+                            Ok(header) => {
+                                self.handle_command(&mut sq, &header, None);
+
+                                // SAFETY: bulk_out_buf has been allocated before the ring, and will
+                                // be dropped after it. Dropping the ring will cancel all pending
+                                // submissions, so we know once it's done we don't have a possible
+                                // access to our buffer anymore.
+                                unsafe {
+                                    self.submit_bulk_out_read(
+                                        &mut sq,
+                                        &mut bulk_out_buf,
+                                        UserData::new(UserDataOpType::BulkOutReadHeader, None),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!("invalid header: {e}");
+
+                                // SAFETY: bulk_out_buf has been allocated before the ring, and will
+                                // be dropped after it. Dropping the ring will cancel all pending
+                                // submissions, so we know once it's done we don't have a possible
+                                // access to our buffer anymore.
+                                unsafe {
+                                    self.submit_bulk_out_read(
+                                        &mut sq,
+                                        &mut bulk_out_buf,
+                                        UserData::new(UserDataOpType::BulkOutReadHeader, None),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    (UserDataOpType::BulkOutReadPayload, _, len) => {
+                        #[expect(
+                            clippy::unwrap_in_result,
+                            reason = "A positive i32 always fits in a usize"
+                        )]
+                        let len = usize::try_from(len)
+                            .expect("A positive i32 will always fit in a usize");
+
+                        if let Some(header) = pending_header.take() {
+                            let data = &bulk_out_buf[..len];
+
+                            if message::checksum(data) == header.data_check {
+                                self.handle_command(&mut sq, &header, Some(data));
+                            } else {
+                                warn!("checksum mismatch, dropping message");
+                            }
+                        } else {
+                            warn!("payload without pending header");
+                        }
 
                         // SAFETY: bulk_out_buf has been allocated before the ring, and will be
                         // dropped after it. Dropping the ring will cancel all pending submissions,
@@ -218,7 +330,7 @@ impl<'a> AdbConnection<'a> {
                             self.submit_bulk_out_read(
                                 &mut sq,
                                 &mut bulk_out_buf,
-                                UserData::new(UserDataOpType::BulkOutRead, None),
+                                UserData::new(UserDataOpType::BulkOutReadHeader, None),
                             );
                         }
                     }

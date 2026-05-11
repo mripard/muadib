@@ -1,0 +1,10 @@
+[Unit]
+Description=ADB FunctionFS Mount
+Requires=muadib-gadget.service
+After=muadib-gadget.service
+
+[Mount]
+What=adb
+Where=/run/muadib/ffs
+Type=functionfs
+Options=context=system_u:object_r:device_t:s0

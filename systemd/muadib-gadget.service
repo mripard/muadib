@@ -1,0 +1,12 @@
+[Unit]
+Description=Muadib USB Gadget Setup
+Requires=sys-kernel-config.mount
+After=sys-kernel-config.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/muadib setup-gadget
+
+[Install]
+WantedBy=usb-gadget.target

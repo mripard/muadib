@@ -6,6 +6,7 @@ use core::{ffi::CStr, num::NonZeroU32};
 use std::{
     env, io,
     os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd},
+    process::Command,
 };
 
 use clap::{Parser, Subcommand};
@@ -252,8 +253,15 @@ impl<'a> AdbConnection<'a> {
                 .get(local_id)
                 .expect("We just opened our stream successfully.");
 
-            if matches!(stream.service, Service::Shell(_)) {
-                self.maybe_submit_pty_read(sq, local_id);
+            match stream.service {
+                Service::Shell(_) => self.maybe_submit_pty_read(sq, local_id),
+                Service::Sync(_) => {}
+                Service::Reboot => {
+                    info!("rebooting device");
+                    if let Err(e) = Command::new("reboot").spawn() {
+                        warn!("reboot failed: {e}");
+                    }
+                }
             }
         } else {
             let clse = message::clse_header(self.version, 0, remote_id);
@@ -309,6 +317,8 @@ impl<'a> AdbConnection<'a> {
                     self.streams.close(local_id);
                 }
             }
+            // Reboot is handled at OPEN time; no WRTE is expected.
+            Service::Reboot => unreachable!(),
         }
     }
 
@@ -700,6 +710,8 @@ impl<'a> AdbConnection<'a> {
         match stream.service {
             Service::Sync(_) => self.maybe_submit_wrte_sync(sq, local_id),
             Service::Shell(_) => self.maybe_submit_pty_read(sq, local_id),
+            // Reboot is handled at OPEN time; no continuation needed.
+            Service::Reboot => unreachable!(),
         }
     }
 

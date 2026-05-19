@@ -14,6 +14,7 @@ Early development. Currently supports:
   `/etc/os-release`, and `/etc/hostname`
 - Interactive shell (`adb shell`)
 - File transfer (`adb pull`, `adb push`)
+- Reboot (`adb reboot`)
 
 ## Requirements
 
@@ -63,4 +64,5 @@ adb get-serialno
 adb shell
 adb pull /path/on/device /local/path
 adb push /local/path /path/on/device
+adb reboot
 ```

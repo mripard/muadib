@@ -26,6 +26,8 @@ pub(crate) enum Service {
     Sync(SyncService),
     /// Interactive shell service (`shell:`).
     Shell(ShellService),
+    /// Device reboot request (`reboot:`).
+    Reboot,
 }
 
 /// An open ADB stream between host and device.
@@ -84,6 +86,7 @@ impl StreamManager {
                     }
                 }
             }
+            _ if service.starts_with("reboot:") => Service::Reboot,
             _ => {
                 warn!("unknown service: {service}");
                 return None;

@@ -17,6 +17,7 @@ mod buffers;
 mod device_info;
 mod ffs;
 mod message;
+mod shell;
 mod stream;
 mod sync;
 mod usb;
@@ -49,6 +50,8 @@ enum UserDataOpType {
 
     /// We queue a write on `bulk_in`
     BulkInWrite,
+    /// We queue a read on a shell PTY master.
+    PtyRead,
 }
 
 impl TryFrom<u32> for UserDataOpType {
@@ -60,6 +63,7 @@ impl TryFrom<u32> for UserDataOpType {
             2 => Ok(Self::BulkOutReadHeader),
             3 => Ok(Self::BulkOutReadPayload),
             4 => Ok(Self::BulkInWrite),
+            5 => Ok(Self::PtyRead),
             other => Err(UserDataOpTypeError(other)),
         }
     }
@@ -242,6 +246,15 @@ impl<'a> AdbConnection<'a> {
             info!("opened stream {local_id} for remote {remote_id}");
             let okay = message::okay_header(self.version, local_id, remote_id);
             self.submit_message(sq, &okay, None);
+
+            let stream = self
+                .streams
+                .get(local_id)
+                .expect("We just opened our stream successfully.");
+
+            if matches!(stream.service, Service::Shell(_)) {
+                self.maybe_submit_pty_read(sq, local_id);
+            }
         } else {
             let clse = message::clse_header(self.version, 0, remote_id);
             self.submit_message(sq, &clse, None);
@@ -288,6 +301,14 @@ impl<'a> AdbConnection<'a> {
                     self.streams.close(local_id);
                 }
             },
+            Service::Shell(shell) => {
+                if let Err(e) = shell.write_input(payload) {
+                    warn!("PTY write error for stream {local_id}: {e}");
+                    let clse = message::clse_header(self.version, local_id, remote_id);
+                    self.submit_message(sq, &clse, None);
+                    self.streams.close(local_id);
+                }
+            }
         }
     }
 
@@ -407,6 +428,41 @@ impl<'a> AdbConnection<'a> {
                 };
 
                 match (user_data.op_type(), user_data.data(), cqe.result()) {
+                    (UserDataOpType::PtyRead, Some(local_id), res) if res <= 0 => {
+                        info!("shell exited on stream {local_id}");
+                        let remote_id = self.streams.get(local_id.get()).map(|s| s.remote_id);
+                        if let Some(remote_id) = remote_id {
+                            let clse =
+                                message::clse_header(self.version, local_id.get(), remote_id);
+                            self.submit_message(&mut sq, &clse, None);
+                        }
+                        self.streams.close(local_id.get());
+                    }
+                    (UserDataOpType::PtyRead, Some(local_id), len) => {
+                        let Some(stream) = self.streams.get(local_id.get()) else {
+                            continue;
+                        };
+                        let Service::Shell(shell) = &mut stream.service else {
+                            continue;
+                        };
+
+                        stream.waiting_for_okay = true;
+                        let remote_id = stream.remote_id;
+                        #[expect(
+                            clippy::unwrap_in_result,
+                            reason = "A positive i32 always fits in a usize"
+                        )]
+                        let len = usize::try_from(len)
+                            .expect("A positive i32 will always fit in a usize");
+                        let data = shell.read_buf_data(len);
+
+                        let wrte =
+                            message::wrte_header(self.version, local_id.get(), remote_id, &data);
+                        self.submit_message(&mut sq, &wrte, Some(&data));
+                    }
+                    (UserDataOpType::PtyRead, None, _) => {
+                        unreachable!()
+                    }
                     // A failed outbound write is not fatal — the USB endpoint
                     // is still usable, so just free the buffer and carry on.
                     (UserDataOpType::BulkInWrite, Some(slot), res) if res < 0 => {
@@ -643,6 +699,42 @@ impl<'a> AdbConnection<'a> {
 
         match stream.service {
             Service::Sync(_) => self.maybe_submit_wrte_sync(sq, local_id),
+            Service::Shell(_) => self.maybe_submit_pty_read(sq, local_id),
+        }
+    }
+
+    /// Submits a PTY master read if the stream is ready for more output.
+    fn maybe_submit_pty_read(&mut self, sq: &mut SubmissionQueue<'_>, local_id: u32) {
+        let Some(stream) = self.streams.get(local_id) else {
+            return;
+        };
+
+        if stream.waiting_for_okay {
+            return;
+        }
+
+        let Service::Shell(shell) = &mut stream.service else {
+            return;
+        };
+
+        let sqe = opcode::Read::new(
+            Fd(shell.master_raw_fd()),
+            shell.read_buf_ptr(),
+            shell.read_buf_capacity(),
+        )
+        .build()
+        .user_data(
+            UserData::new(
+                UserDataOpType::PtyRead,
+                Some(NonZeroU32::new(local_id).expect("Service ID 0 cannot exist")),
+            )
+            .into(),
+        );
+
+        // SAFETY: read_buf is owned by ShellService and stays alive as long as
+        // the stream exists. The stream is closed before ShellService is dropped.
+        unsafe {
+            sq.push(&sqe).expect("SQ full");
         }
     }
 
@@ -658,7 +750,10 @@ impl<'a> AdbConnection<'a> {
 
         let remote_id = stream.remote_id;
 
-        let Service::Sync(ref mut sync_svc) = stream.service;
+        let Service::Sync(ref mut sync_svc) = stream.service else {
+            return;
+        };
+
         let SyncState::Sending(ref mut sender) = sync_svc.state else {
             return;
         };

@@ -18,12 +18,14 @@ use std::collections::HashMap;
 
 use log::warn;
 
-use crate::sync::SyncService;
+use crate::{shell::ShellService, sync::SyncService};
 
 /// Back-end handler for an open ADB stream.
 pub(crate) enum Service {
     /// File-transfer service (`sync:`).
     Sync(SyncService),
+    /// Interactive shell service (`shell:`).
+    Shell(ShellService),
 }
 
 /// An open ADB stream between host and device.
@@ -66,9 +68,22 @@ impl StreamManager {
     ///
     /// Returns `None` if the service is unknown.
     pub(crate) fn open(&mut self, remote_id: u32, service: &str) -> Option<u32> {
-        #[expect(clippy::single_match_else)]
         let service = match service {
             "sync:" => Service::Sync(SyncService::new()),
+            _ if service.starts_with("shell:") => {
+                let Some(cmd) = service.strip_prefix("shell:") else {
+                    unreachable!()
+                };
+
+                let cmd = if cmd.is_empty() { None } else { Some(cmd) };
+                match ShellService::spawn(cmd) {
+                    Ok(s) => Service::Shell(s),
+                    Err(e) => {
+                        warn!("cannot spawn shell: {e}");
+                        return None;
+                    }
+                }
+            }
             _ => {
                 warn!("unknown service: {service}");
                 return None;

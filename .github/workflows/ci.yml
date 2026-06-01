@@ -49,3 +49,22 @@ jobs:
           components: clippy
       - name: Clippy
         run: cargo clippy
+
+  integration:
+    name: Integration Tests
+    needs: build_and_test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    steps:
+      - name: Run tests on Testing Farm
+        uses: sclorg/testing-farm-as-github-action@v4
+        with:
+          api_key: ${{ secrets.TF_API_KEY }}
+          compose: Fedora-latest
+          tmt_plan_regex: adb
+          create_issue_comment: true
+          update_pull_request_status: true
+          pull_request_status_name: Integration (adb)

@@ -1,0 +1,83 @@
+summary: Test adb push, pull, and shell over USB gadget with dummy_hcd
+
+discover:
+    how: fmf
+    filter: tag:adb
+
+provision:
+    how: virtual
+    image: fedora
+
+prepare:
+  - name: Install packages
+    how: install
+    package:
+      - android-tools
+      - kernel-modules-extra
+      - kernel-modules-internal
+
+  - name: Build and install muadib
+    how: shell
+    script: |
+      dnf install -y cargo rust
+      cd ${TMT_TREE}
+      cargo build --release
+      install -m 755 target/release/muadib /usr/bin/
+      install -d /usr/share/muadib
+      cp target/release/build/muadib-*/out/descriptors.bin /usr/share/muadib/
+      cp target/release/build/muadib-*/out/strings.bin /usr/share/muadib/
+      cp systemd/* /etc/systemd/system/
+      systemctl daemon-reload
+
+  - name: Start muadib
+    how: shell
+    script: |
+      modprobe libcomposite
+      modprobe dummy_hcd
+      if ! lsmod | grep -q dummy_hcd; then
+        echo "dummy_hcd module failed to load"
+        find /lib/modules/$(uname -r) -name 'dummy*' 2>/dev/null
+        exit 1
+      fi
+
+      systemctl start muadib-gadget.service || {
+        echo "muadib-gadget.service failed"
+        systemctl status muadib-gadget.service --no-pager
+        exit 1
+      }
+
+      systemctl start muadib.socket || {
+        echo "muadib.socket failed"
+        systemctl status muadib.socket --no-pager
+        exit 1
+      }
+
+      systemctl start muadib-udc.service || {
+        echo "muadib-udc.service failed"
+        systemctl status muadib-udc.service --no-pager
+        exit 1
+      }
+
+      adb start-server
+      for i in $(seq 1 30); do
+        if adb devices | grep -q 'device$'; then
+          echo "Device detected"
+          exit 0
+        fi
+        sleep 1
+      done
+      echo "Timed out waiting for device"
+      adb devices
+      journalctl -u muadib.service --no-pager -n 50
+      exit 1
+
+execute:
+    how: tmt
+
+finish:
+  - how: shell
+    script: |
+      adb kill-server || true
+      systemctl stop muadib.service muadib.socket muadib-udc.service muadib-gadget.service || true
+      systemctl stop run-muadib-ffs.mount || true
+      modprobe -r dummy_hcd || true

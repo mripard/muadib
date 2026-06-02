@@ -1,0 +1,9 @@
+summary: Test adb push
+description: |
+    Verify that files can be pushed to the device using adb push.
+    Covers small text files, binary data, large multi-chunk transfers,
+    empty files, overwrites, and error cases.
+test: ./test.sh
+framework: shell
+tag: adb
+duration: 5m

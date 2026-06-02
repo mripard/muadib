@@ -1,0 +1,9 @@
+summary: Test adb shell
+description: |
+    Verify that commands can be executed on the device using adb shell.
+    Covers simple commands, pipes, large output, and one-shot vs
+    interactive execution.
+test: ./test.sh
+framework: shell
+tag: adb
+duration: 5m

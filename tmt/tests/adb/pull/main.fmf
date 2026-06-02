@@ -1,0 +1,9 @@
+summary: Test adb pull
+description: |
+    Verify that files can be pulled from the device using adb pull.
+    Covers small text files, binary data, large multi-chunk transfers,
+    empty files, and error cases.
+test: ./test.sh
+framework: shell
+tag: adb
+duration: 5m

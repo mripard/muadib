@@ -10,6 +10,7 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
+use log::debug;
 use rustix::pty::{OpenptFlags, grantpt, ioctl_tiocgptpeer, openpt, unlockpt};
 
 const PTY_READ_BUF_SIZE: usize = 4096;
@@ -28,13 +29,16 @@ impl ShellService {
     ///
     /// Returns an error if PTY allocation or process spawning fails.
     pub(crate) fn spawn(command: Option<&str>) -> io::Result<Self> {
+        debug!("spawning shell: {:?}", command);
+
         let master_fd = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
-            .map_err(io::Error::from)?;
+            .inspect_err(|e| debug!("openpt failed: {e}"))?;
 
-        grantpt(&master_fd).map_err(io::Error::from)?;
-        unlockpt(&master_fd).map_err(io::Error::from)?;
+        grantpt(&master_fd).inspect_err(|e| debug!("grantpt failed: {e}"))?;
+        unlockpt(&master_fd).inspect_err(|e| debug!("unlockpt failed: {e}"))?;
 
-        let slave_fd = ioctl_tiocgptpeer(&master_fd, OpenptFlags::RDWR).map_err(io::Error::from)?;
+        let slave_fd = ioctl_tiocgptpeer(&master_fd, OpenptFlags::RDWR | OpenptFlags::NOCTTY)
+            .inspect_err(|e| debug!("tiocgptpeer failed: {e}"))?;
 
         let stdin: Stdio = slave_fd.try_clone()?.into();
         let stdout: Stdio = slave_fd.try_clone()?.into();

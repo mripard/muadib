@@ -37,7 +37,7 @@ impl ShellService {
         grantpt(&master_fd).inspect_err(|e| debug!("grantpt failed: {e}"))?;
         unlockpt(&master_fd).inspect_err(|e| debug!("unlockpt failed: {e}"))?;
 
-        let slave_fd = ioctl_tiocgptpeer(&master_fd, OpenptFlags::RDWR)
+        let slave_fd = ioctl_tiocgptpeer(&master_fd, OpenptFlags::RDWR | OpenptFlags::NOCTTY)
             .inspect_err(|e| debug!("tiocgptpeer failed: {e}"))?;
 
         let stdin: Stdio = slave_fd.try_clone()?.into();

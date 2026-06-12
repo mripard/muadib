@@ -14,6 +14,8 @@ Early development. Currently supports:
   `/etc/os-release`, and `/etc/hostname`
 - Interactive shell (`adb shell`)
 - File transfer (`adb pull`, `adb push`)
+- Port forwarding (`adb forward`) over TCP, abstract Unix, and
+  filesystem Unix sockets
 - Reboot (`adb reboot`)
 
 ## Requirements
@@ -64,5 +66,9 @@ adb get-serialno
 adb shell
 adb pull /path/on/device /local/path
 adb push /local/path /path/on/device
+adb forward tcp:HOST_PORT tcp:DEVICE_PORT
+adb forward tcp:HOST_PORT localabstract:NAME
+adb forward tcp:HOST_PORT localfilesystem:PATH
+adb forward --remove tcp:HOST_PORT
 adb reboot
 ```

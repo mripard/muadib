@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use log::warn;
 
-use crate::{shell::ShellService, sync::SyncService};
+use crate::{forward::ForwardService, shell::ShellService, sync::SyncService};
 
 /// Back-end handler for an open ADB stream.
 pub(crate) enum Service {
@@ -28,6 +28,8 @@ pub(crate) enum Service {
     Shell(ShellService),
     /// Device reboot request (`reboot:`).
     Reboot,
+    /// Socket forwarding service (`tcp:`, `localabstract:`, `localfilesystem:`).
+    Forward(ForwardService),
 }
 
 /// An open ADB stream between host and device.
@@ -49,6 +51,21 @@ pub(crate) struct Stream {
     /// the OKAY after it received the WRTE on the bus, so the OKAY
     /// implies the write reached the host regardless of CQE ordering.
     pub waiting_for_okay: bool,
+    /// Whether the host has sent CLSE for this stream.
+    ///
+    /// For forward streams the host typically sends WRTE followed
+    /// immediately by CLSE once the client's TCP connection closes.
+    /// If the stream were torn down on CLSE, any response data still
+    /// in flight from the forwarded socket (e.g. an echo server's
+    /// reply) would be lost because the pending `SocketRead` CQE
+    /// would find the stream already gone.
+    ///
+    /// Setting this flag instead of closing lets the socket drain:
+    /// the write side is shut down so the destination gets EOF, while
+    /// the read side stays alive to deliver remaining data back to
+    /// the host. The stream is finally closed when `SocketRead`
+    /// returns 0 or an error.
+    pub remote_closed: bool,
 }
 
 /// Manages active ADB streams, keyed by device-local ID.
@@ -87,6 +104,18 @@ impl StreamManager {
                 }
             }
             _ if service.starts_with("reboot:") => Service::Reboot,
+            _ if service.starts_with("tcp:")
+                || service.starts_with("localabstract:")
+                || service.starts_with("localfilesystem:") =>
+            {
+                match ForwardService::connect(service) {
+                    Ok(f) => Service::Forward(f),
+                    Err(e) => {
+                        warn!("cannot connect forward destination: {e}");
+                        return None;
+                    }
+                }
+            }
             _ => {
                 warn!("unknown service: {service}");
                 return None;
@@ -102,6 +131,7 @@ impl StreamManager {
                 remote_id,
                 service,
                 waiting_for_okay: false,
+                remote_closed: false,
             },
         );
 

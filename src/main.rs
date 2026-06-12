@@ -17,6 +17,7 @@ use thiserror::Error;
 mod buffers;
 mod device_info;
 mod ffs;
+mod forward;
 mod message;
 mod shell;
 mod stream;
@@ -53,6 +54,8 @@ enum UserDataOpType {
     BulkInWrite,
     /// We queue a read on a shell PTY master.
     PtyRead,
+    /// We queue a read on a forwarded socket.
+    SocketRead,
 }
 
 impl TryFrom<u32> for UserDataOpType {
@@ -65,6 +68,7 @@ impl TryFrom<u32> for UserDataOpType {
             3 => Ok(Self::BulkOutReadPayload),
             4 => Ok(Self::BulkInWrite),
             5 => Ok(Self::PtyRead),
+            6 => Ok(Self::SocketRead),
             other => Err(UserDataOpTypeError(other)),
         }
     }
@@ -181,6 +185,13 @@ impl<'a> AdbConnection<'a> {
 
         assert_eq!(stream.remote_id, header.arg0, "CLSE remote_id mismatch");
 
+        if let Service::Forward(fwd) = &stream.service {
+            info!("host closed stream {local_id}, draining forward socket");
+            drop(fwd.shutdown_write());
+            stream.remote_closed = true;
+            return;
+        }
+
         info!("host closed stream {local_id}");
 
         let clse = message::clse_header(self.version, local_id, stream.remote_id);
@@ -261,6 +272,7 @@ impl<'a> AdbConnection<'a> {
 
             match stream.service {
                 Service::Shell(_) => self.maybe_submit_pty_read(sq, local_id),
+                Service::Forward(_) => self.maybe_submit_socket_read(sq, local_id),
                 Service::Sync(_) => {}
                 Service::Reboot => {
                     info!("rebooting device");
@@ -324,6 +336,14 @@ impl<'a> AdbConnection<'a> {
             Service::Shell(shell) => {
                 if let Err(e) = shell.write_input(payload) {
                     warn!("PTY write error for stream {local_id}: {e}");
+                    let clse = message::clse_header(self.version, local_id, remote_id);
+                    Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
+                    self.streams.close(local_id);
+                }
+            }
+            Service::Forward(fwd) => {
+                if let Err(e) = fwd.write_input(payload) {
+                    warn!("socket write error for stream {local_id}: {e}");
                     let clse = message::clse_header(self.version, local_id, remote_id);
                     Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
                     self.streams.close(local_id);
@@ -496,8 +516,54 @@ impl<'a> AdbConnection<'a> {
                             Some(data),
                         );
                     }
-                    (UserDataOpType::PtyRead, None, _) => {
+                    (UserDataOpType::PtyRead | UserDataOpType::SocketRead, None, _) => {
                         unreachable!()
+                    }
+                    (UserDataOpType::SocketRead, Some(local_id), res) if res <= 0 => {
+                        info!("forwarded socket closed on stream {local_id}");
+                        let remote_id = self.streams.get(local_id.get()).map(|s| s.remote_id);
+                        if let Some(remote_id) = remote_id {
+                            let clse =
+                                message::clse_header(self.version, local_id.get(), remote_id);
+                            Self::submit_message(
+                                &mut self.buffers,
+                                self.bulk_in,
+                                &mut sq,
+                                &clse,
+                                None,
+                            );
+                        }
+                        self.streams.close(local_id.get());
+                    }
+                    (UserDataOpType::SocketRead, Some(local_id), len) => {
+                        let Some(stream) = self.streams.get(local_id.get()) else {
+                            continue;
+                        };
+                        let Service::Forward(fwd) = &mut stream.service else {
+                            continue;
+                        };
+
+                        stream.waiting_for_okay = true;
+                        let remote_id = stream.remote_id;
+                        #[expect(
+                            clippy::unwrap_in_result,
+                            reason = "A positive i32 always fits in a usize"
+                        )]
+                        let len = usize::try_from(len)
+                            .expect("A positive i32 will always fit in a usize");
+                        // SAFETY: io_uring has completed a read of `len` bytes
+                        // into the buffer before this CQE is delivered.
+                        let data = unsafe { fwd.read_buf_data(len) };
+
+                        let wrte =
+                            message::wrte_header(self.version, local_id.get(), remote_id, data);
+                        Self::submit_message(
+                            &mut self.buffers,
+                            self.bulk_in,
+                            &mut sq,
+                            &wrte,
+                            Some(data),
+                        );
                     }
                     // A failed outbound write is not fatal — the USB endpoint
                     // is still usable, so just free the buffer and carry on.
@@ -737,6 +803,7 @@ impl<'a> AdbConnection<'a> {
         match stream.service {
             Service::Sync(_) => self.maybe_submit_wrte_sync(sq, local_id),
             Service::Shell(_) => self.maybe_submit_pty_read(sq, local_id),
+            Service::Forward(_) => self.maybe_submit_socket_read(sq, local_id),
             // Reboot is handled at OPEN time; no continuation needed.
             Service::Reboot => unreachable!(),
         }
@@ -772,6 +839,42 @@ impl<'a> AdbConnection<'a> {
 
         // SAFETY: read_buf is owned by ShellService and stays alive as long as
         // the stream exists. The stream is closed before ShellService is dropped.
+        unsafe {
+            sq.push(&sqe).expect("SQ full");
+        }
+    }
+
+    /// Submits a socket read if the stream is ready for more data.
+    fn maybe_submit_socket_read(&mut self, sq: &mut SubmissionQueue<'_>, local_id: u32) {
+        let Some(stream) = self.streams.get(local_id) else {
+            return;
+        };
+
+        if stream.waiting_for_okay {
+            return;
+        }
+
+        let Service::Forward(fwd) = &mut stream.service else {
+            return;
+        };
+
+        let sqe = opcode::Read::new(
+            Fd(fwd.as_raw_fd()),
+            fwd.read_buf_ptr(),
+            fwd.read_buf_capacity(),
+        )
+        .build()
+        .user_data(
+            UserData::new(
+                UserDataOpType::SocketRead,
+                Some(NonZeroU32::new(local_id).expect("Service ID 0 cannot exist")),
+            )
+            .into(),
+        );
+
+        // SAFETY: read_buf is owned by ForwardService and stays alive as long
+        // as the stream exists. The stream is closed before ForwardService is
+        // dropped.
         unsafe {
             sq.push(&sqe).expect("SQ full");
         }

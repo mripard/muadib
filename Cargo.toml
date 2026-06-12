@@ -30,6 +30,7 @@ dmidecode = { version = "1", default-features = false, features = ["std"] }
 io-uring = { version = "0.7", default-features = false }
 log = { version = "0.4", default-features = false, features = ["std"] }
 rustix = { version = "1", default-features = false, features = [
+    "net",
     "process",
     "pty",
     "std",

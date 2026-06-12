@@ -1,0 +1,9 @@
+summary: Test adb forward
+description: |
+    Verify that TCP and Unix socket forwarding works using adb forward.
+    Covers tcp, localfilesystem, and localabstract destination types,
+    as well as forward removal.
+test: ./test.sh
+framework: shell
+tag: adb
+duration: 5m

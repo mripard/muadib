@@ -104,9 +104,13 @@ impl ShellService {
     }
 
     /// Returns a slice of `len` bytes from the read buffer.
-    pub(crate) fn read_buf_data(&self, len: usize) -> &[u8] {
-        // SAFETY: The caller guarantees that io_uring has written `len` bytes
-        // into the buffer before calling this method.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `io_uring` has written at least `len` bytes
+    /// into the buffer before calling this method.
+    pub(crate) unsafe fn read_buf_data(&self, len: usize) -> &[u8] {
+        // SAFETY: Guaranteed by the caller.
         unsafe { core::slice::from_raw_parts(self.read_buf.as_ptr(), len) }
     }
 

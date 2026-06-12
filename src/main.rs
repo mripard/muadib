@@ -482,7 +482,9 @@ impl<'a> AdbConnection<'a> {
                         )]
                         let len = usize::try_from(len)
                             .expect("A positive i32 will always fit in a usize");
-                        let data = shell.read_buf_data(len);
+                        // SAFETY: io_uring has completed a read of `len` bytes
+                        // into the buffer before this CQE is delivered.
+                        let data = unsafe { shell.read_buf_data(len) };
 
                         let wrte =
                             message::wrte_header(self.version, local_id.get(), remote_id, data);

@@ -29,7 +29,7 @@ impl ShellService {
     ///
     /// Returns an error if PTY allocation or process spawning fails.
     pub(crate) fn spawn(command: Option<&str>) -> io::Result<Self> {
-        debug!("spawning shell: {:?}", command);
+        debug!("spawning shell: {command:?}");
 
         let master_fd = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
             .inspect_err(|e| debug!("openpt failed: {e}"))?;
@@ -103,11 +103,11 @@ impl ShellService {
             .expect("PTY read buffer fits in u32")
     }
 
-    /// Copies `len` bytes from the read buffer into a new `Vec`.
-    pub(crate) fn read_buf_data(&self, len: usize) -> Vec<u8> {
+    /// Returns a slice of `len` bytes from the read buffer.
+    pub(crate) fn read_buf_data(&self, len: usize) -> &[u8] {
         // SAFETY: The caller guarantees that io_uring has written `len` bytes
         // into the buffer before calling this method.
-        unsafe { core::slice::from_raw_parts(self.read_buf.as_ptr(), len) }.to_vec()
+        unsafe { core::slice::from_raw_parts(self.read_buf.as_ptr(), len) }
     }
 
     /// Writes data to the PTY master (i.e. the shell's stdin).

@@ -38,11 +38,11 @@ pub(crate) struct Stream {
     pub service: Service,
     /// Whether we are waiting for an OKAY before sending the next WRTE.
     ///
-    /// Set *before* the WRTE is submitted to io_uring, cleared when the
+    /// Set *before* the WRTE is submitted to `io_uring`, cleared when the
     /// host's OKAY arrives. The WRTE write completion (CQE) is only used
     /// to free the buffer — it plays no role in flow control.
     ///
-    /// io_uring may deliver the OKAY read CQE before the WRTE write CQE.
+    /// `io_uring` may deliver the OKAY read CQE before the WRTE write CQE.
     /// When that happens we clear this flag and submit the next WRTE
     /// immediately, so two writes can be in-flight at once. This is safe
     /// because each write has its own buffer, and the host can only send

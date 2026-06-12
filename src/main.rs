@@ -184,7 +184,7 @@ impl<'a> AdbConnection<'a> {
         info!("host closed stream {local_id}");
 
         let clse = message::clse_header(self.version, local_id, stream.remote_id);
-        self.submit_message(sq, &clse, None);
+        Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
         self.streams.close(local_id);
     }
 
@@ -205,7 +205,13 @@ impl<'a> AdbConnection<'a> {
         self.version = recv_version;
 
         let (response_header, response_payload) = message::cnxn_response(recv_version, self.info);
-        self.submit_message(sq, &response_header, Some(&response_payload));
+        Self::submit_message(
+            &mut self.buffers,
+            self.bulk_in,
+            sq,
+            &response_header,
+            Some(&response_payload),
+        );
     }
 
     /// Handles OKAY: marks the stream as ready and continues any pending transfer.
@@ -232,21 +238,21 @@ impl<'a> AdbConnection<'a> {
         let Ok(c_service) = CStr::from_bytes_until_nul(payload) else {
             warn!("host sent non-null terminated service name");
             let clse = message::clse_header(self.version, 0, remote_id);
-            self.submit_message(sq, &clse, None);
+            Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
             return;
         };
 
         let Ok(service) = c_service.to_str() else {
             warn!("host sent non-utf8 encoded service name");
             let clse = message::clse_header(self.version, 0, remote_id);
-            self.submit_message(sq, &clse, None);
+            Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
             return;
         };
 
         if let Some(local_id) = self.streams.open(remote_id, service) {
             info!("opened stream {local_id} for remote {remote_id}");
             let okay = message::okay_header(self.version, local_id, remote_id);
-            self.submit_message(sq, &okay, None);
+            Self::submit_message(&mut self.buffers, self.bulk_in, sq, &okay, None);
 
             let stream = self
                 .streams
@@ -265,7 +271,7 @@ impl<'a> AdbConnection<'a> {
             }
         } else {
             let clse = message::clse_header(self.version, 0, remote_id);
-            self.submit_message(sq, &clse, None);
+            Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
         }
     }
 
@@ -280,7 +286,7 @@ impl<'a> AdbConnection<'a> {
         let local_id = header.arg1;
 
         let okay = message::okay_header(self.version, local_id, remote_id);
-        self.submit_message(sq, &okay, None);
+        Self::submit_message(&mut self.buffers, self.bulk_in, sq, &okay, None);
 
         let Some(stream) = self.streams.get(local_id) else {
             warn!("WRTE for unknown stream {local_id}");
@@ -294,7 +300,13 @@ impl<'a> AdbConnection<'a> {
                 SyncResult::Stat(stat) => {
                     let wrte =
                         message::wrte_header(self.version, local_id, remote_id, stat.as_le_bytes());
-                    self.submit_message(sq, &wrte, Some(stat.as_le_bytes()));
+                    Self::submit_message(
+                        &mut self.buffers,
+                        self.bulk_in,
+                        sq,
+                        &wrte,
+                        Some(stat.as_le_bytes()),
+                    );
                 }
                 SyncResult::Data(hdr, data) => {
                     self.submit_wrte_sync(sq, local_id, remote_id, &hdr, &data);
@@ -305,7 +317,7 @@ impl<'a> AdbConnection<'a> {
                 SyncResult::Quit => {
                     info!("sync session quit, closing stream {local_id}");
                     let clse = message::clse_header(self.version, local_id, remote_id);
-                    self.submit_message(sq, &clse, None);
+                    Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
                     self.streams.close(local_id);
                 }
             },
@@ -313,7 +325,7 @@ impl<'a> AdbConnection<'a> {
                 if let Err(e) = shell.write_input(payload) {
                     warn!("PTY write error for stream {local_id}: {e}");
                     let clse = message::clse_header(self.version, local_id, remote_id);
-                    self.submit_message(sq, &clse, None);
+                    Self::submit_message(&mut self.buffers, self.bulk_in, sq, &clse, None);
                     self.streams.close(local_id);
                 }
             }
@@ -444,7 +456,13 @@ impl<'a> AdbConnection<'a> {
                         if let Some(remote_id) = remote_id {
                             let clse =
                                 message::clse_header(self.version, local_id.get(), remote_id);
-                            self.submit_message(&mut sq, &clse, None);
+                            Self::submit_message(
+                                &mut self.buffers,
+                                self.bulk_in,
+                                &mut sq,
+                                &clse,
+                                None,
+                            );
                         }
                         self.streams.close(local_id.get());
                     }
@@ -467,8 +485,14 @@ impl<'a> AdbConnection<'a> {
                         let data = shell.read_buf_data(len);
 
                         let wrte =
-                            message::wrte_header(self.version, local_id.get(), remote_id, &data);
-                        self.submit_message(&mut sq, &wrte, Some(&data));
+                            message::wrte_header(self.version, local_id.get(), remote_id, data);
+                        Self::submit_message(
+                            &mut self.buffers,
+                            self.bulk_in,
+                            &mut sq,
+                            &wrte,
+                            Some(data),
+                        );
                     }
                     (UserDataOpType::PtyRead, None, _) => {
                         unreachable!()
@@ -641,18 +665,19 @@ impl<'a> AdbConnection<'a> {
 
     /// Submits an ADB message (header + optional payload) to `bulk_in` via `io_uring`.
     fn submit_message(
-        &mut self,
+        buffers: &mut BufferManager,
+        bulk_in: BorrowedFd<'_>,
         sq: &mut SubmissionQueue<'_>,
         header: &message::AdbHeader,
         payload: Option<&[u8]>,
     ) {
         let payload = payload.filter(|p| !p.is_empty());
 
-        let (hdr_slot, hdr_buf) = self.buffers.alloc(size_of_val(header));
+        let (hdr_slot, hdr_buf) = buffers.alloc(size_of_val(header));
         hdr_buf.extend_from_slice(header.as_le_bytes());
 
         let mut hdr_sqe = opcode::Write::new(
-            Fd(self.bulk_in.as_raw_fd()),
+            Fd(bulk_in.as_raw_fd()),
             hdr_buf.as_ptr(),
             u32::try_from(hdr_buf.len()).expect("buffer length fits in u32"),
         )
@@ -676,11 +701,11 @@ impl<'a> AdbConnection<'a> {
         };
 
         if let Some(payload) = payload {
-            let (pay_slot, pay_buf) = self.buffers.alloc(payload.len());
+            let (pay_slot, pay_buf) = buffers.alloc(payload.len());
             pay_buf.extend_from_slice(payload);
 
             let pay_sqe = opcode::Write::new(
-                Fd(self.bulk_in.as_raw_fd()),
+                Fd(bulk_in.as_raw_fd()),
                 pay_buf.as_ptr(),
                 u32::try_from(pay_buf.len()).expect("buffer length fits in u32"),
             )
@@ -793,7 +818,13 @@ impl<'a> AdbConnection<'a> {
         sync_payload.extend_from_slice(payload);
 
         let wrte = message::wrte_header(self.version, local_id, remote_id, &sync_payload);
-        self.submit_message(sq, &wrte, Some(&sync_payload));
+        Self::submit_message(
+            &mut self.buffers,
+            self.bulk_in,
+            sq,
+            &wrte,
+            Some(&sync_payload),
+        );
     }
 }
 

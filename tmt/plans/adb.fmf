@@ -15,6 +15,7 @@ prepare:
       - android-tools
       - kernel-modules-extra
       - kernel-modules-internal
+      - socat
 
   - name: Build and install muadib
     how: shell

@@ -48,6 +48,8 @@ jobs:
     name: Clippy
     needs: build_and_test
     runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_WARNINGS: deny
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

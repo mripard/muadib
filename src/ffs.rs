@@ -161,7 +161,10 @@ pub(crate) fn find_udc() -> io::Result<OsString> {
 pub(crate) fn bind_udc() -> io::Result<()> {
     let udc = find_udc()?;
 
-    info!("binding to UDC: {}", udc.display());
+    info!(
+        "binding to UDC: {}",
+        udc.to_str().unwrap_or("(non-utf8 string)")
+    );
 
     fs::write(Path::new(GADGET_PATH).join("UDC"), udc.as_encoded_bytes())
 }

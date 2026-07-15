@@ -27,7 +27,16 @@ jobs:
       fail-fast: false
       matrix:
         rust:
+          # Debian stable (trixie)
+          - "1.85"
+          - "1.86"
+          - "1.87"
+          # RHEL 10.1
+          - "1.88"
+          - "1.89"
+          - "1.90"
           - "1.91"
+          # RHEL 10.2
           - "1.92"
           - "1.93"
           - "1.94"

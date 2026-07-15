@@ -1,0 +1,11 @@
+[Unit]
+Description=Muadib ADB Daemon
+Requires=adibi.socket
+After=adibi.socket
+
+[Service]
+Type=simple
+Sockets=adibi.socket
+USBFunctionDescriptors=/usr/share/adibi/descriptors.bin
+USBFunctionStrings=/usr/share/adibi/strings.bin
+ExecStart=/usr/bin/adibi

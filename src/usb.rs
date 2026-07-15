@@ -8,7 +8,7 @@
 use core::{ptr, slice};
 
 #[cfg(not(target_endian = "little"))]
-compile_error!("muadib requires a little-endian target");
+compile_error!("adibi requires a little-endian target");
 
 /// Trait for zero-copy conversion to a little-endian byte slice.
 pub(crate) trait AsLittleEndianBytes {

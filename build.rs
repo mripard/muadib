@@ -1,7 +1,7 @@
 // Generates FunctionFS descriptor and string binary blobs for ADB.
 //
 // The resulting `descriptors.bin` and `strings.bin` are written to OUT_DIR and
-// installed to `/usr/share/muadib/`. They are referenced by the systemd
+// installed to `/usr/share/adibi/`. They are referenced by the systemd
 // service unit's `USBFunctionDescriptors=` and `USBFunctionStrings=`
 // directives.
 

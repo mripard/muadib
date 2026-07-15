@@ -1,0 +1,11 @@
+[Unit]
+Description=Muadib ADB FunctionFS Socket
+Requires=run-adibi-ffs.mount
+After=run-adibi-ffs.mount
+Wants=adibi-udc.service
+
+[Socket]
+ListenUSBFunction=/run/adibi/ffs
+
+[Install]
+WantedBy=sockets.target

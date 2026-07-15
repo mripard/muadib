@@ -1,4 +1,4 @@
-# muadib
+# adibi
 
 A Linux implementation of the Android Debug Bridge (ADB) device side,
 written in Rust. It exposes a USB gadget via `FunctionFS` so that a host
@@ -40,10 +40,10 @@ referenced by the systemd service unit.
 Install the binary, `FunctionFS` blobs, and systemd units:
 
 ```
-sudo install -m 755 target/release/muadib /usr/bin/muadib
-sudo install -d /usr/share/muadib
-sudo install -m 644 target/release/build/muadib-*/out/descriptors.bin /usr/share/muadib/
-sudo install -m 644 target/release/build/muadib-*/out/strings.bin /usr/share/muadib/
+sudo install -m 755 target/release/adibi /usr/bin/adibi
+sudo install -d /usr/share/adibi
+sudo install -m 644 target/release/build/adibi-*/out/descriptors.bin /usr/share/adibi/
+sudo install -m 644 target/release/build/adibi-*/out/strings.bin /usr/share/adibi/
 sudo install -m 644 systemd/*.service systemd/*.socket systemd/*.mount /etc/systemd/system/
 ```
 
@@ -51,11 +51,11 @@ Enable the gadget service and socket:
 
 ```
 sudo systemctl daemon-reload
-sudo systemctl enable muadib-gadget.service
-sudo systemctl enable muadib.socket
+sudo systemctl enable adibi-gadget.service
+sudo systemctl enable adibi.socket
 ```
 
-When a host connects over USB, systemd activates `muadib.service` via
+When a host connects over USB, systemd activates `adibi.service` via
 socket activation on the `FunctionFS` endpoints.
 
 ## Host side

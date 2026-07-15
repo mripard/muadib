@@ -5,7 +5,7 @@ use std::fs;
 use dmidecode::{EntryPoint, Structure};
 use log::debug;
 
-const DEFAULT_NAME: &str = "muadib";
+const DEFAULT_NAME: &str = "adibi";
 
 /// Identity information advertised during the ADB CNXN handshake.
 #[derive(Debug)]

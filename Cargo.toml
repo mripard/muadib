@@ -11,9 +11,9 @@ description = "Android Debug Bridge (ADB) Implementation"
 edition = "2024"
 keywords = ["adb", "android", "debug"]
 license-file = "./LICENSE"
-name = "muadib"
+name = "adibi"
 readme = "./README.md"
-repository = "https://github.com/mripard/muadib.git"
+repository = "https://github.com/mripard/adibi.git"
 version = "0.1.0"
 
 [dependencies]

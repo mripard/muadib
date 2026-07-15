@@ -10,8 +10,8 @@ use crate::usb::{
     ADB_MANUFACTURER_EN, ADB_PRODUCT_EN, USB_LANG_EN_US, USB_PRODUCT_ID_ADB, USB_VENDOR_ID_GOOGLE,
 };
 
-const FFS_PATH: &str = "/run/muadib/ffs";
-const GADGET_PATH: &str = "/sys/kernel/config/usb_gadget/muadib";
+const FFS_PATH: &str = "/run/adibi/ffs";
+const GADGET_PATH: &str = "/sys/kernel/config/usb_gadget/adibi";
 
 const FUNCTIONFS_BIND: u8 = 0;
 const FUNCTIONFS_UNBIND: u8 = 1;

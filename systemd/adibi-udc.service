@@ -1,9 +1,9 @@
 [Unit]
 Description=Muadib UDC Binding
-Requires=muadib.socket
-After=muadib.socket
+Requires=adibi.socket
+After=adibi.socket
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/muadib bind-udc
+ExecStart=/usr/bin/adibi bind-udc

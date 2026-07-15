@@ -3,7 +3,7 @@ set -euo pipefail
 
 fail() {
     echo "FAIL: $1" >&2
-    journalctl -u muadib.service --no-pager -n 30 >&2 || true
+    journalctl -u adibi.service --no-pager -n 30 >&2 || true
     exit 1
 }
 
